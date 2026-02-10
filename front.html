@@ -1,0 +1,70 @@
+<!-- AI Action Bot Widget -->
+
+
+<div id="ai-bot" style="position: fixed; bottom: 20px; right: 20px; width: 320px; max-height: 500px; background: #fff; border: 1px solid #ccc; padding: 10px; border-radius: 10px; z-index: 9999; display: flex; flex-direction: column;">
+    <div id="bot-header" style="font-weight:bold; margin-bottom: 5px;">AI Action Bot</div>
+    <div id="bot-messages" style="flex:1; overflow-y:auto; border:1px solid #eee; padding:5px; margin-bottom: 5px;"></div>
+    <div style="display:flex;">
+        <input type="text" id="bot-input" placeholder="Type your command..." style="flex:1; padding:5px;">
+        <button id="bot-send" style="margin-left:5px;">Send</button>
+        <button id="bot-voice" style="margin-left:5px;">🎤</button>
+    </div>
+ </div>
+
+<script>
+const messagesDiv = document.getElementById("bot-messages");
+const input = document.getElementById("bot-input");
+const sendBtn = document.getElementById("bot-send");
+const voiceBtn = document.getElementById("bot-voice");
+
+function appendMessage(sender, text) {
+    const div = document.createElement("div");
+    div.innerHTML = `<b>${sender}:</b> ${text}`;
+    messagesDiv.appendChild(div);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+async function sendMessage(message) {
+    if (!message) return;
+    appendMessage("You", message);
+    input.value = "";
+
+    try {
+        const res = await fetch("http://localhost:8000/generate", {  // Flask backend URL
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({ message: message, execute: true })
+        });
+        const data = await res.json();
+
+        appendMessage("Bot", data.explanation || "No response");
+
+        if (data.code) {
+            const codeDiv = document.createElement("pre");
+            codeDiv.textContent = data.code;
+            codeDiv.style.background = "#f3f3f3";
+            codeDiv.style.padding = "5px";
+            codeDiv.style.borderRadius = "5px";
+            messagesDiv.appendChild(codeDiv);
+        }
+
+        if (data.execution) {
+            const execDiv = document.createElement("pre");
+            execDiv.textContent = "Output:\n" + (data.execution.stdout || "") + (data.execution.stderr ? "\nError: " + data.execution.stderr : "");
+            execDiv.style.background = "#e8ffe8";
+            execDiv.style.padding = "5px";
+            execDiv.style.borderRadius = "5px";
+            messagesDiv.appendChild(execDiv);
+        }
+
+    } catch (err) {
+        appendMessage("Bot", "Error connecting to server");
+    }
+}
+
+sendBtn.onclick = () => sendMessage(input.value);
+input.addEventListener("keydown", (e) => { if (e.key==="Enter") sendMessage(input.value); });
+
+// Placeholder: voice input
+voiceBtn.onclick = () => appendMessage("Bot", "Voice input coming soon!");
+</script>
