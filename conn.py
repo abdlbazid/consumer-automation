@@ -5,12 +5,28 @@ import subprocess
 import requests
 from flask_cors import CORS
 
+import sentry_sdk
+from sentry_sdk.integrations.flask import FlaskIntegration
+
+# --- NEW: IMPORT FROM ASYNCCALL.PY ---
+from asynccall import execute_backend_async
+
+# Initialize Sentry only when a DSN is provided (avoid errors in local dev)
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[FlaskIntegration()],
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "1.0")),
+        send_default_pii=True,
+    )
+else:
+    print("⚠️ Sentry disabled: set SENTRY_DSN to enable error reporting")
+
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/": {"origins": "*"}})
 
-# URL of the real AI backesnd (app.py)
 AI_BACKEND_URL = os.getenv("AI_BACKEND_URL", "http://localhost:5000/generate")
-
 
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
@@ -18,22 +34,29 @@ def generate_endpoint():
     message = data.get("message", "")
     execute_flag = bool(data.get("execute", False))
 
+    if len(message) > 5000:
+        return jsonify({"error": "Message too long (max 5000 caracters)"})
+    
     if not message:
         return jsonify({"error": "Missing 'message' field"}), 400
 
+    if not AI_BACKEND_URL.startswith("http"):
+         return jsonify({"error": "Invalid AI_BACKEND_URL"}), 500 
+    
     # -----------------------------
-    # CONNECT TO REAL BACKEND (app.py)
+    # CONNECT TO REAL BACKEND (via imported asynccall.py logic)
     try:
-        backend_response = requests.post(
-            AI_BACKEND_URL,
-            json={
-                "message": message,
-                "execute": execute_flag
-            },
-            timeout=30
-        )
-        backend_response.raise_for_status()
-        backend_data = backend_response.json()
+        # Start the async thread
+        internal_token = os.getenv("INTERNAL_API_TOKEN")
+        thread, result_dict = execute_backend_async(message, execute_flag, AI_BACKEND_URL, internal_token)
+        
+        # Wait for the thread to finish (as in your original logic)
+        thread.join(timeout=35)
+        
+        backend_data = result_dict.get("response", {})
+
+        if "error" in backend_data:
+            raise Exception(backend_data["error"])
 
         code = backend_data.get("code", "")
         explanation = backend_data.get("explanation", "")
@@ -41,8 +64,9 @@ def generate_endpoint():
 
         # Backend already handled execution
         execute_flag = False
-
+ 
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         code = ""
         explanation = "Failed to connect to AI backend"
         execution_result = {
@@ -99,5 +123,4 @@ def index():
 
 
 if __name__ == "__main__":
-    # IMPORTANT: use a different port than app.py
     app.run(host="0.0.0.0", port=8000, debug=True)
