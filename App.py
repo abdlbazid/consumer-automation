@@ -9,18 +9,16 @@ from typing import Dict, Any, Tuple
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
+# Load .env variables
+load_dotenv()
+
 import spacy
 from openai import OpenAI
 import requests
 import json
 import logging
 
-# basic logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Load .env variables
-load_dotenv()
+from awsstore import gmail_token, openai_key,get_keys
 
 # ------------------- NLP -------------------
 try:
@@ -29,10 +27,13 @@ except Exception as e:
     raise RuntimeError("Run: python -m spacy download en_core_web_sm") from e
 
 # ------------------- OpenAI -------------------
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Fetch keys directly from AWS
+keys = get_keys()  # This already uses boto3 internally
+GMAIL_TOKEN = keys.get("gmail_token")
+OPENAI_API_KEY = keys.get("openai_key")
 
-# ------------------- Flask -------------------
+# Initialize OpenAI client
+client = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
 
 # ------------------- Config -------------------
@@ -180,7 +181,10 @@ You can import and use the gmail_api module for email tasks. Available functions
 
 Task: {user_text}
 
-Generate ONLY the Python code wrapped in ```python code blocks. No explanations."""
+Generate ONLY the Python code wrapped in ```python code blocks. No explanations.
+
+dont do anything thats dangeous or against te law always comply with open ai usage policies
+"""
     else:
         prompt = user_text
 
@@ -314,6 +318,11 @@ def test_llm():
 
 @app.route("/generate", methods=["POST"])
 def generate_endpoint():
+    internal_token = os.getenv("INTERNAL_API_TOKEN")
+    token = request.headers.get("X-Internal-Token")
+    if token != internal_token:
+        return jsonify({"error": "Unauthorized"}), 401
+
     """Main endpoint for code generation and execution."""
     data = request.get_json(force=True)
     if not data:
@@ -468,6 +477,136 @@ def health():
         "llm_model": LLM_MODEL,
         "gmail_api_available": gmail_api is not None
     }), 200
+
+@app.route("/generate-audio", methods=["POST"])
+def generate_audio_route():
+    if 'file' not in request.files:
+        return jsonify({"error": "No audio file uploaded"}), 400
+
+    # 1. Get text using the function in audio.py
+    extracted_text = audio.handle_audio(request.files['file'])
+
+    # 2. Pass that text to the shared logic (allows confirmation, execution, etc.)
+    confirm = bool(request.args.get("confirm", "false").lower() in ("1", "true", "yes"))
+    return process_text_and_respond(extracted_text, execute=True, confirm=confirm)
+
+
+@app.route("/generate-image", methods=["POST"])
+def generate_image_route():
+    if 'file' not in request.files:
+        return jsonify({"error": "No image uploaded"}), 400
+
+    # 1. Get text using the function in cam.py
+    extracted_text = cam.handle_image(request.files['file'])
+
+    # 2. Pass that text to the shared logic (allows confirmation, execution, etc.)
+    confirm = bool(request.args.get("confirm", "false").lower() in ("1", "true", "yes"))
+    return process_text_and_respond(extracted_text, execute=True, confirm=confirm)
+
+def _looks_like_sensitive_action(text: str) -> Tuple[bool, str]:
+    """Basic heuristic to detect potentially sensitive actions requiring confirmation."""
+    lower = text.lower()
+    # Financial / payment-related actions
+    for keyword in ["pay", "transfer", "send money", "withdraw", "invoice", "charge", "bill"]:
+        if keyword in lower:
+            return True, f"This looks like a financial action ({keyword}). Please confirm to proceed."
+
+    # Destructive actions
+    for keyword in ["delete account", "delete database", "wipe", "destroy", "format", "erase"]:
+        if keyword in lower:
+            return True, f"This looks like a destructive action ({keyword}). Please confirm to proceed."
+
+    # High-risk automation
+    for keyword in ["execute", "run", "deploy", "shutdown", "reboot"]:
+        if keyword in lower:
+            return True, f"This looks like a potentially risky automation action ({keyword}). Please confirm to proceed."
+
+    return False, ""
+
+
+def process_text_and_respond(text: str, execute: bool = True, confirm: bool = False):
+    """Shared processing pipeline for text/voice/image input.
+
+    This allows the same logic to be used across /generate, /generate-audio, and /generate-image.
+    """
+
+    # Determine if the user asked for something sensitive (confirmation required)
+    requires_confirm, confirmation_msg = _looks_like_sensitive_action(text)
+    if requires_confirm and not confirm:
+        return jsonify({
+            "requires_confirmation": True,
+            "confirmation_message": confirmation_msg,
+            "user_message": text,
+        })
+
+    # Run the same pipeline as /generate
+    nlp_summary = preprocess_user_message(text)
+    prompt, mode = build_prompt_for_llm(nlp_summary)
+    llm_text = call_llm_generate_code(prompt)
+
+    if mode == "generate_code":
+        code, explanation = extract_code_from_response(llm_text)
+        dangerous, danger_msg = fails_safety_checks(code)
+        safe_to_run = not dangerous
+
+        execution_result = None
+        if execute:
+            if not safe_to_run:
+                execution_result = {
+                    "stdout": "",
+                    "stderr": danger_msg,
+                    "exit_code": 1,
+                    "runtime": 0,
+                    "timeout": False,
+                }
+            elif code:
+                execution_result = run_code_safely(code)
+    else:
+        code = ""
+        explanation = llm_text
+        execution_result = None
+
+    return jsonify({
+        "user_message": text,
+        "mode": mode,
+        "llm_raw": llm_text,
+        "code": code,
+        "explanation": explanation,
+        "execution": execution_result,
+    })
+
+app = Flask(__name__)  # we already have a flask
+
+# Enforce HTTPS in production; disable for local dev to avoid SSL errors
+FORCE_HTTPS = os.getenv("FORCE_HTTPS", "false").strip().lower() in ("1", "true", "yes")
+Talisman(app, force_https=FORCE_HTTPS)
+limiter = Limiter(get_remote_address, app=app, default_limits=["100 per day"])
+
+INTERNAL_TOKEN = os.getenv("INTERNAL_API_TOKEN")
+
+@app.route("/generate", methods=["POST"])
+@limiter.limit("5 per minute")
+def generate_endpoint():
+    # --- SECURITY CHECK ---
+    provided_token = request.headers.get("X-Internal-Token")
+    if not INTERNAL_TOKEN or provided_token != INTERNAL_TOKEN:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # --- DATA EXTRACTION ---
+    data = request.get_json(force=True)
+    user_message = data.get("message")
+    execute_flag = bool(data.get("execute", True))
+    confirm_flag = bool(data.get("confirm", False))
+
+    if not user_message:
+        return jsonify({"error": "Missing message"}), 400
+
+    # --- Shared processing pipeline (with confirmation support) ---
+    try:
+        return process_text_and_respond(user_message, execute=execute_flag, confirm=confirm_flag)
+    except Exception as e:
+        return jsonify({"error": "Processing failed", "details": str(e)}), 500
+
 
 # ------------------- Entrypoint -------------------
 if __name__ == "__main__":
