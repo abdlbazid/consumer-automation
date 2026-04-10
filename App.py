@@ -39,7 +39,7 @@ app = Flask(__name__)
 DANGEROUS_PATTERNS = [
     r"\beval\s*\(", r"\bexec\s*\(",
 ]
-EXECUTION_TIMEOUT = 6
+EXECUTION_TIMEOUT = 60
 MAX_USER_PROMPT_CHARS = 3000
 LLM_MODEL = "gpt-5-nano"
 
