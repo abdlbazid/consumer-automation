@@ -1,12 +1,10 @@
-const API_BASE = "http://3.80.95.49:8000";
+const API_BASE = "http://localhost:8000";
 
-// ---------- Main Text Command ----------
 document.getElementById("send").addEventListener("click", async () => {
   const input = document.getElementById("input").value;
   const output = document.getElementById("output");
 
-  // Show "Thinking..." without disrupting the flow
-  output.textContent = "Thinking..."; 
+  output.textContent = "Thinking...";
 
   try {
     const res = await fetch(`${API_BASE}/generate`, {
@@ -117,4 +115,27 @@ document.getElementById("capture").addEventListener("click", async () => {
     const data = await res.json();
     output.textContent = JSON.stringify(data, null, 2);
   }, "image/png");
+});
+
+document.getElementById("send").addEventListener("click", async () => {
+  const input = document.getElementById("input").value;
+  const output = document.getElementById("output");
+
+  output.textContent = "Thinking...";
+
+  try {
+    const res = await fetch("http://localhost:8000/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+         message: input,
+         execute: true
+        })
+    });
+
+    const data = await res.json();
+    output.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    output.textContent = "Error: " + e.message;
+  }
 });
