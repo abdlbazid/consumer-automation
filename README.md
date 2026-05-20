@@ -1,4 +1,4 @@
-# consumer automation 🚀
+# Consumer automation 🚀
 
 > **Natural language → real-world execution. Bypassing the UI entirely.**
 
